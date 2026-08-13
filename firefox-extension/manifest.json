@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "YTDL-Material Capture",
+  "version": "1.1.1",
+  "description": "Captures media URLs and the request headers that made them work, then sends them to a YoutubeDL-Material instance.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ytdlm-capture@cronus130.github.io",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "webRequestFilterResponse",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "metadata.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "YTDL-Material Capture"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  }
+}

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <span class="title">Captured media</span>
+    <button id="clear" class="link-button" title="Forget everything captured for this tab">Clear</button>
+  </header>
+
+  <p id="status" class="status"></p>
+  <ul id="captures"></ul>
+
+  <footer>
+    <span id="segments" class="segments"></span>
+    <span>
+      <button id="diagnostics" class="link-button" title="Show every request seen on this tab, and why each was or was not captured">Diagnostics</button>
+      <button id="copy" class="link-button" title="Copy the diagnostic list as JSON">Copy</button>
+      <button id="options" class="link-button">Options</button>
+    </span>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
