@@ -3,9 +3,13 @@
   <div style="margin-bottom: 10px;">
     <!-- We can support text dialogs or dialogs where users must select items from a list -->
     <ng-container *ngIf="dialogType === 'text'">
-      {{dialogText}}
+      <!-- pre-line so callers can use newlines to structure a longer message -->
+      <div class="confirm-dialog-text-block">{{dialogText}}</div>
     </ng-container>
     <ng-container *ngIf="dialogType === 'selection_list'">
+      <!-- dialogText was previously only rendered for text dialogs, so callers
+           passing it alongside a selection list had it silently dropped. -->
+      <p *ngIf="dialogText" class="confirm-dialog-text">{{dialogText}}</p>
       <mat-selection-list [(ngModel)]="selected_items">
         <mat-list-option *ngFor="let item of list" [value]="item.key">
           {{item.title}}

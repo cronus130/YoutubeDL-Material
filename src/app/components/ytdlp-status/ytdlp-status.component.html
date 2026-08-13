@@ -1,0 +1,52 @@
+<ng-container *ngIf="status && postsService.hasPermission('settings')">
+    <button mat-button class="ytdlp-status-button" [matMenuTriggerFor]="ytdlpMenu"
+            matTooltip="yt-dlp version and updates" i18n-matTooltip="yt-dlp status tooltip">
+        <mat-icon class="ytdlp-status-icon" *ngIf="!checking">update</mat-icon>
+        <mat-spinner class="ytdlp-status-spinner" *ngIf="checking" [diameter]="18"></mat-spinner>
+        <span class="ytdlp-status-version">{{status.version || 'yt-dlp'}}</span>
+        <mat-icon class="ytdlp-status-warn" *ngIf="status.held_version"
+                  matTooltip="Held after a rollback" i18n-matTooltip="yt-dlp held tooltip">lock</mat-icon>
+    </button>
+
+    <mat-menu #ytdlpMenu="matMenu" [classList]="'ytdlp-status-menu'">
+        <div class="ytdlp-status-panel" (click)="$event.stopPropagation()">
+            <div class="ytdlp-status-title" i18n="yt-dlp status panel title">yt-dlp</div>
+
+            <div class="ytdlp-status-row">
+                <span class="ytdlp-status-label" i18n="yt-dlp version label">Version</span>
+                <span class="ytdlp-status-value">{{status.version || 'unknown'}}</span>
+            </div>
+
+            <div class="ytdlp-status-row">
+                <span class="ytdlp-status-label" i18n="yt-dlp last updated label">Last updated</span>
+                <span class="ytdlp-status-value" [matTooltip]="absoluteTime(status.last_update)">{{relativeTime(status.last_update)}}</span>
+            </div>
+
+            <div class="ytdlp-status-row">
+                <span class="ytdlp-status-label" i18n="yt-dlp last checked label">Last checked</span>
+                <span class="ytdlp-status-value" [matTooltip]="absoluteTime(status.last_check)">{{relativeTime(status.last_check)}}</span>
+            </div>
+
+            <div class="ytdlp-status-row" *ngIf="status.channel">
+                <span class="ytdlp-status-label" i18n="yt-dlp channel label">Channel</span>
+                <span class="ytdlp-status-value">{{status.channel}}<ng-container *ngIf="status.flavor"> ({{status.flavor}})</ng-container></span>
+            </div>
+
+            <div class="ytdlp-status-note" *ngIf="status.held_version">
+                <mat-icon class="ytdlp-status-note-icon">lock</mat-icon>
+                <span i18n="yt-dlp held note">Held on {{status.held_version}} after a rollback. Updates are paused until the hold is released from the updater.</span>
+            </div>
+
+            <div class="ytdlp-status-note" *ngIf="!status.sidecar_detected">
+                <mat-icon class="ytdlp-status-note-icon">info</mat-icon>
+                <span i18n="yt-dlp no sidecar note">No updater sidecar detected. The version shown is whatever the app last recorded, and checking for updates will have no effect.</span>
+            </div>
+
+            <button mat-stroked-button class="ytdlp-status-check" color="accent"
+                    [disabled]="checking || !status.sidecar_detected" (click)="checkNow()">
+                <ng-container *ngIf="!checking" i18n="yt-dlp check for updates button">Check for updates</ng-container>
+                <ng-container *ngIf="checking" i18n="yt-dlp checking label">Checking…</ng-container>
+            </button>
+        </div>
+    </mat-menu>
+</ng-container>

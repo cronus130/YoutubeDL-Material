@@ -3,3 +3,18 @@
 .mat-mdc-progress-spinner {
     margin-left: 8px;
 }
+// Longer text dialogs are structured with newlines by their callers.
+.confirm-dialog-text-block {
+    white-space: pre-line;
+    font-size: 13px;
+    line-height: 1.45;
+    max-width: 520px;
+}
+
+// Explanatory line above a selection list.
+.confirm-dialog-text {
+    font-size: 13px;
+    line-height: 1.45;
+    opacity: 0.8;
+    margin: 0 0 12px 0;
+}

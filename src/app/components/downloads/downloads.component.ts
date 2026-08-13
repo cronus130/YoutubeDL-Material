@@ -60,6 +60,15 @@ export class DownloadsComponent implements OnInit, OnDestroy {
       icon: 'warning'
     },
     {
+      // Raised by the site-detection fallback: it needs a decision before the
+      // download can continue. Shown ahead of the pause/resume actions because
+      // nothing else will move this download along.
+      tooltip: $localize`Review and confirm`,
+      action: (download: Download) => this.reviewPendingDownload(download),
+      show: (download: Download) => !!download['pending_confirmation'],
+      icon: 'rule'
+    },
+    {
       tooltip: $localize`Restart`,
       action: (download: Download) => this.restartDownload(download),
       show: (download: Download) => download.finished,
@@ -144,7 +153,17 @@ export class DownloadsComponent implements OnInit, OnDestroy {
 
   getCurrentDownloads(): void {
     this.postsService.getCurrentDownloads(this.uids).subscribe(res => {
-      if (res['downloads'] !== null 
+      // In filtered mode (the home page) the backend also returns downloads
+      // started elsewhere - the capture extension, the API - while they are
+      // active. Adopt their uids so they stay listed after they finish, the same
+      // way a download started from this page does. Without this they vanish the
+      // instant they complete and look like they never appeared.
+      if (this.uids && res['downloads']) {
+        for (const download of res['downloads']) {
+          if (!this.uids.includes(download['uid'])) this.uids.push(download['uid']);
+        }
+      }
+      if (res['downloads'] !== null
         && res['downloads'] !== undefined
         && JSON.stringify(this.downloads) !== JSON.stringify(res['downloads'])) {
           this.downloads = this.combineDownloads(this.downloads, res['downloads']);
@@ -159,6 +178,105 @@ export class DownloadsComponent implements OnInit, OnDestroy {
         // failed to get downloads
       }
       this.downloads_retrieved = true;
+    });
+  }
+
+  // Dispatches on what the backend is asking for. Both prompts reuse the shared
+  // confirm dialog: an extension warning is a text confirmation, and picking a
+  // detected candidate is a selection list.
+  reviewPendingDownload(download: Download): void {
+    const confirmation = download['pending_confirmation'];
+    if (!confirmation) return;
+
+    if (confirmation.kind === 'unsafe_extension') {
+      this.confirmUnsafeExtension(download, confirmation);
+    } else if (confirmation.kind === 'candidate_selection') {
+      this.chooseDetectedCandidate(download, confirmation);
+    }
+  }
+
+  private confirmUnsafeExtension(download: Download, confirmation: any): void {
+    // The extension is whatever yt-dlp itself reported refusing, and the
+    // content type is what the server actually returned - both are shown so the
+    // decision is evidence-based rather than a blind "allow?".
+    const lines = [
+      $localize`yt-dlp refused to save this download because the file extension is unusual.`,
+      '',
+      $localize`Extension it wants to write: .${confirmation.extension}`,
+      confirmation.content_type
+        ? $localize`The server reports this file as: ${confirmation.content_type}`
+        : $localize`The server did not report a content type.`,
+      confirmation.server_says_media
+        ? $localize`That content type is a media type, so this is most likely a genuine video served from an unusual URL.`
+        : $localize`That is not a recognised media type, so treat this with more caution.`,
+      '',
+      $localize`URL: ${confirmation.url}`,
+      '',
+      $localize`Allowing this adds --compat-options allow-unsafe-ext for this download only. This safety check exists to stop dangerous file extensions being written to disk, so only allow it if you recognise the source.`
+    ];
+
+    const doneEmitter = new EventEmitter<boolean>();
+    const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+      data: {
+        dialogType: 'text',
+        dialogTitle: $localize`Unusual file extension`,
+        dialogText: lines.join('\n'),
+        submitText: $localize`Allow and download`,
+        cancelText: $localize`Cancel download`,
+        warnSubmitColor: true,
+        doneEmitter: doneEmitter
+      }
+    });
+    doneEmitter.subscribe((done: boolean) => {
+      if (done) this.sendConfirmation(download, true, null, dialogRef);
+    });
+  }
+
+  private chooseDetectedCandidate(download: Download, confirmation: any): void {
+    const doneEmitter = new EventEmitter<boolean>();
+    const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+      data: {
+        dialogType: 'selection_list',
+        dialogTitle: $localize`Choose which video to download`,
+        dialogText: $localize`yt-dlp could not handle this page, but ${confirmation.candidates.length} possible media URLs were found on it. Pick the one you want.`,
+        submitText: $localize`Download selected`,
+        doneEmitter: doneEmitter,
+        list: confirmation.candidates.map(candidate => ({
+          key: candidate.url,
+          title: this.describeCandidate(candidate)
+        }))
+      }
+    });
+    doneEmitter.subscribe((done: boolean) => {
+      if (!done) return;
+      const selected = dialogRef.componentInstance.selected_items;
+      if (!selected || selected.length === 0) return;
+      // The dialog is a multi-select; only one candidate can be downloaded here.
+      this.sendConfirmation(download, true, selected[0], dialogRef);
+    });
+  }
+
+  private describeCandidate(candidate: any): string {
+    const parts = [];
+    if (candidate.content_type) parts.push(candidate.content_type);
+    if (candidate.content_length) parts.push(`${(candidate.content_length / 1048576).toFixed(1)} MB`);
+    parts.push($localize`found in ${candidate.found_in}`);
+    if (candidate.needs_confirmation_for_extension) parts.push($localize`unusual extension`);
+    // The URL matters most here - two candidates often differ only by filename.
+    return `${candidate.url}  —  ${parts.join(', ')}`;
+  }
+
+  private sendConfirmation(download: Download, approve: boolean, candidate_url: string, dialogRef = null): void {
+    this.postsService.confirmPendingDownload(download['uid'], approve, candidate_url).subscribe(res => {
+      if (res && res.success) {
+        this.postsService.openSnackBar(approve ? $localize`Download resumed.` : $localize`Download cancelled.`);
+        if (dialogRef) dialogRef.close();
+        this.getCurrentDownloads();
+      } else {
+        this.postsService.openSnackBar((res && res.error) || $localize`Could not update the download.`);
+      }
+    }, () => {
+      this.postsService.openSnackBar($localize`Could not update the download.`);
     });
   }
 

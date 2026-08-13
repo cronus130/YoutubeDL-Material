@@ -121,6 +121,28 @@ import { Title } from '@angular/platform-browser';
 import { MatDrawerMode } from '@angular/material/sidenav';
 import { environment } from '../environments/environment';
 
+// Declared here rather than in api-types/, which is generated from the OpenAPI
+// spec and would lose hand-written additions on the next regeneration.
+export interface YtdlpStatus {
+    downloader: string;
+    version: string | null;
+    // False when no updater sidecar has ever written its status file - the
+    // version still comes back, sourced from the app's own record.
+    sidecar_detected: boolean;
+    channel: string | null;
+    flavor: string | null;
+    last_check: string | null;
+    last_update: string | null;
+    last_result: string | null;
+    held_version: string | null;
+}
+
+export interface YtdlpCheckNowResponse {
+    success: boolean;
+    sidecar_detected: boolean;
+    error?: string;
+}
+
 @Injectable()
 export class PostsService implements CanActivate {
     path = '';
@@ -694,6 +716,25 @@ export class PostsService implements CanActivate {
 
     getVersionInfo() {
         return this.http.get<VersionInfoResponse>(this.path + 'versionInfo', this.httpOptions);
+    }
+
+    // Answers a download parked by the site-detection fallback: approving an
+    // unusual file extension, or choosing which detected candidate to use.
+    confirmPendingDownload(download_uid: string, approve: boolean, candidate_url: string = null) {
+        const body = {download_uid: download_uid, approve: approve, candidate_url: candidate_url};
+        return this.http.post<{success: boolean, declined?: boolean, error?: string}>(
+            this.path + 'confirmPendingDownload', body, this.httpOptions);
+    }
+
+    getYtdlpStatus() {
+        return this.http.get<YtdlpStatus>(this.path + 'ytdlpStatus', this.httpOptions);
+    }
+
+    // Asks the updater sidecar to check now. Does not update anything itself -
+    // the sidecar owns the binary, and the app's own updater would install an
+    // unverified copy over it.
+    ytdlpCheckNow() {
+        return this.http.post<YtdlpCheckNowResponse>(this.path + 'ytdlpCheckNow', {}, this.httpOptions);
     }
 
     updateServer(tag: string) {

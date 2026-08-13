@@ -178,6 +178,20 @@
                             <mat-hint><ng-container i18n="Download rate limit input hint">Rate limits your downloads to the specified amount. Ex: 200K</ng-container></mat-hint>
                         </mat-form-field>
                     </div>
+
+                    <div class="col-12 mt-4">
+                        <mat-slide-toggle color="accent" [(ngModel)]="new_config['Downloader']['vpn_proxy_enabled']"><ng-container i18n="Route downloads through VPN setting">Route downloads through VPN</ng-container></mat-slide-toggle>
+                        <div class="settings-hint mt-1">
+                            <ng-container i18n="VPN proxy toggle hint">Sends all yt-dlp download traffic through the proxy below. The web interface, database and everything else are unaffected. A --proxy set by hand in the custom args above takes precedence over this.</ng-container>
+                        </div>
+                    </div>
+                    <div class="col-12 mt-2 mb-4">
+                        <mat-form-field class="text-field" color="accent">
+                            <mat-label i18n="VPN proxy URL">VPN proxy URL</mat-label>
+                            <input [(ngModel)]="new_config['Downloader']['vpn_proxy_url']" placeholder="http://gluetun:8888" matInput>
+                            <mat-hint><ng-container i18n="VPN proxy URL input hint">Address of the VPN proxy container, for example http://gluetun:8888. Has no effect while the toggle above is off.</ng-container></mat-hint>
+                        </mat-form-field>
+                    </div>
                 </div>
             </div>
             <mat-divider></mat-divider>

@@ -50,7 +50,11 @@
     </mat-menu>
     <mat-card [matTooltip]="null" (click)="navigateToFile($event)" matRipple class="file-mat-card" [ngClass]="{'small-mat-card': card_size === 'small', 'file-mat-card': card_size === 'medium', 'large-mat-card': card_size === 'large', 'mat-elevation-z4': !elevated, 'mat-elevation-z8': elevated}">
         <div style="padding:5px">
-            <div *ngIf="!loading && file_obj.thumbnailURL" class="img-div">
+            <!-- thumbnailPath alone is enough: it points at a poster stored next to
+                 the file, which is the only kind a capture ever has. thumbnailURL
+                 comes from yt-dlp's info JSON and is always empty for a bare CDN or
+                 manifest URL, so gating on it alone hid every captured thumbnail. -->
+            <div *ngIf="!loading && (file_obj.thumbnailURL || file_obj.thumbnailPath)" class="img-div">
                 <div [ngClass]="{'image-small': card_size === 'small', 'image': card_size === 'medium', 'image-large': card_size === 'large'}" style="position: relative">
                     <img *ngIf="!hide_image || is_playlist || (file_obj.type === 'audio' || file_obj.isAudio)" [ngClass]="{'image-small': card_size === 'small', 'image': card_size === 'medium', 'image-large': card_size === 'large'}" [src]="file_obj.thumbnailPath ? thumbnailBlobURL : file_obj.thumbnailURL" alt="Thumbnail">
                     <video *ngIf="elevated && !is_playlist && !(file_obj.type === 'audio' || file_obj.isAudio)" autoplay loop muted [muted]="true" [ngClass]="{'video-small': card_size === 'small', 'video': card_size === 'medium', 'video-large': card_size === 'large'}" [src]="streamURL">

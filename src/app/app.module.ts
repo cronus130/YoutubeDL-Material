@@ -92,6 +92,7 @@ import { RestoreDbDialogComponent } from './dialogs/restore-db-dialog/restore-db
 import { NotificationsComponent } from './components/notifications/notifications.component';
 import { NotificationsListComponent } from './components/notifications-list/notifications-list.component';
 import { TaskSettingsComponent } from './components/task-settings/task-settings.component';
+import { YtdlpStatusComponent } from './components/ytdlp-status/ytdlp-status.component';
 import { GenerateRssUrlComponent } from './dialogs/generate-rss-url/generate-rss-url.component';
 import { SortPropertyComponent } from './components/sort-property/sort-property.component';
 import { OnlyNumberDirective } from './directives/only-number.directive';
@@ -145,6 +146,7 @@ registerLocaleData(es, 'es');
         NotificationsComponent,
         NotificationsListComponent,
         TaskSettingsComponent,
+        YtdlpStatusComponent,
         GenerateRssUrlComponent,
         SortPropertyComponent,
         OnlyNumberDirective,

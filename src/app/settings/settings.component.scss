@@ -111,3 +111,12 @@
     top: 6px;
     margin-left: 10px;
 }
+
+// Explanatory text under a toggle, matching the weight of mat-hint (which is
+// only available inside a mat-form-field).
+.settings-hint {
+    font-size: 12px;
+    line-height: 1.4;
+    opacity: 0.7;
+    max-width: 640px;
+}

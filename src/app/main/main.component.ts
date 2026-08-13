@@ -239,6 +239,16 @@ export class MainComponent implements OnInit {
       if (this.current_download) {
         this.getCurrentDownload();
       }
+      // The downloads table is only rendered once this.downloads has something in
+      // it, and that only ever happened for downloads started from this page. A
+      // download created anywhere else - the capture extension, the API, the
+      // Telegram bot - could therefore never make the table appear at all.
+      //
+      // Poll for active ones only while the table is hidden: once it renders, the
+      // table component does its own polling and this would be duplicated work.
+      if (this.downloads.length === 0) {
+        this.adoptExternalDownloads();
+      }
     }, 1000);
 
     return true;
@@ -430,6 +440,23 @@ export class MainComponent implements OnInit {
       }
     }
     return null;
+  }
+
+  // Picks up downloads created outside this page so the table can show them.
+  // Passing an empty uid array makes the backend return active downloads that are
+  // not from a subscription; adopting their uids means they stay listed once they
+  // finish rather than vanishing the instant they complete.
+  adoptExternalDownloads(): void {
+    this.postsService.getCurrentDownloads([]).subscribe(res => {
+      const external = res['downloads'];
+      if (!external || external.length === 0) return;
+      for (const download of external) {
+        if (!this.download_uids.includes(download['uid'])) this.download_uids.push(download['uid']);
+        if (!this.downloads.find(existing => existing['uid'] === download['uid'])) this.downloads.push(download);
+      }
+    }, () => {
+      // Nothing to do - the table simply stays hidden until the next tick.
+    });
   }
 
   getDownloadByUID(uid: string): Download {
