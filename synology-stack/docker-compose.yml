@@ -1,0 +1,81 @@
+# YoutubeDL-Material + yt-dlp updater sidecar.
+#
+# This is the active stack. The optional VPN egress proxy lives in
+# docker-compose.vpn.yml and is NOT part of this file - see docs/VPN-ROUTING.md.
+#
+# Validate before importing into Container Manager:
+#   sudo docker compose config
+services:
+  ytdl_material:
+    # This fork's own build, not upstream's image. The top-bar yt-dlp widget and
+    # the VPN toggle are changes to the app itself, so an upstream image will not
+    # have them. .github/workflows/docker.yml builds this on every push to master
+    # and pushes it to ghcr.io.
+    #
+    # If you ever point this back at upstream, use a `nightly` tag and NOT
+    # `latest`: upstream's `latest` is the v4.3.2 image from 2023-05-27, which
+    # keeps its downloader at node_modules/youtube-dl/bin/ inside the container
+    # rather than in appdata/, where the updater sidecar cannot manage it.
+    #
+    # Pin to a dated tag (e.g. nightly-2025-03-18) for reproducible deploys.
+    image: ${APP_IMAGE:-ghcr.io/cronus130/youtubedl-material}:${APP_IMAGE_TAG:-nightly}
+    restart: unless-stopped
+    depends_on:
+      - ytdl-mongo-db
+    environment:
+      ytdl_mongodb_connection_string: 'mongodb://ytdl-mongo-db:27017'
+      ytdl_use_local_db: 'false'
+      write_ytdl_config: 'true'
+      TZ: ${TZ:-Pacific/Honolulu}
+    volumes:
+      - ${APPDATA_PATH:-./appdata}:/app/appdata
+      - ${AUDIO_PATH:-./audio}:/app/audio
+      - ${VIDEO_PATH:-./video}:/app/video
+      - ${SUBSCRIPTIONS_PATH:-./subscriptions}:/app/subscriptions
+      - ${USERS_PATH:-./users}:/app/users
+    ports:
+      - "${APP_PORT:-8998}:17442"
+
+  ytdl-mongo-db:
+    image: mongo:4
+    container_name: mongo-db
+    restart: unless-stopped
+    logging:
+      driver: "none"
+    volumes:
+      - ${DB_PATH:-./db}:/data/db
+
+  # Keeps appdata/bin/yt-dlp current without restarting the app.
+  # Only mounts appdata - it cannot touch the media volumes or the database.
+  ytdlp-updater:
+    build:
+      context: ./updater
+    container_name: ytdlp-updater
+    restart: unless-stopped
+    depends_on:
+      - ytdl_material
+    # Must match the owner of appdata/ so the app can still exec what we write.
+    # The app image defaults to 1000:1000; override in .env if yours differs.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ${APPDATA_PATH:-./appdata}:/app/appdata
+    environment:
+      TZ: ${TZ:-Pacific/Honolulu}
+      APPDATA_DIR: /app/appdata
+      YTDLP_CHANNEL: ${YTDLP_CHANNEL:-stable}
+      YTDLP_FLAVOR: ${YTDLP_FLAVOR:-standalone}
+      UPDATE_INTERVAL_HOURS: ${UPDATE_INTERVAL_HOURS:-12}
+      RUN_ON_START: ${RUN_ON_START:-true}
+      STARTUP_DELAY_SECONDS: ${STARTUP_DELAY_SECONDS:-60}
+      KEEP_BACKUPS: ${KEEP_BACKUPS:-5}
+      PIN_APP_UPDATER: ${PIN_APP_UPDATER:-true}
+      SMOKE_TEST_URL: ${SMOKE_TEST_URL:-}
+      COOKIE_MAX_AGE_DAYS: ${COOKIE_MAX_AGE_DAYS:-30}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      PUSHOVER_ENABLED: ${PUSHOVER_ENABLED:-false}
+      PUSHOVER_APP_TOKEN: ${PUSHOVER_APP_TOKEN:-}
+      PUSHOVER_USER_KEY: ${PUSHOVER_USER_KEY:-}
+      PUSHOVER_NOTIFY_NOOP: ${PUSHOVER_NOTIFY_NOOP:-false}
+    labels:
+      # This container manages its own versioning; Watchtower must not race it.
+      com.centurylinklabs.watchtower.enable: "false"

@@ -1,0 +1,74 @@
+# OPTIONAL VPN egress overlay - NOT ENABLED.
+#
+# Nothing here runs unless you pass this file explicitly:
+#   sudo docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d
+#
+# Importing docker-compose.yml into Container Manager on its own ignores this
+# file entirely, which is the current state.
+#
+# Gluetun brings up its own WireGuard/OpenVPN tunnel and exposes an HTTP proxy on
+# it. yt-dlp is pointed at that proxy from the app's Settings page, so the toggle
+# is a runtime setting rather than a compose change.
+#
+# This needs NO changes to the NAS network: no macvlan, no `docker network
+# create` over SSH, no router policy route. See docs/VPN-ROUTING.md.
+services:
+  # Second bridge network on the app so it can reach the proxy by name. Its
+  # existing network is kept, so the web UI, Mongo and direct (unproxied)
+  # downloads are all unaffected.
+  ytdl_material:
+    networks:
+      - default
+      - vpn_link
+
+  gluetun:
+    image: qmcgaw/gluetun:${GLUETUN_IMAGE_TAG:-v3}
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    # Deliberately only on vpn_link, and no published ports: the proxy should be
+    # reachable from the app and nothing else.
+    networks:
+      - vpn_link
+    environment:
+      TZ: ${TZ:-Pacific/Honolulu}
+
+      # --- tunnel -----------------------------------------------------------
+      # Provider name as gluetun spells it (mullvad, protonvpn, nordvpn, ...),
+      # or 'custom' with your own config. See docs/VPN-ROUTING.md.
+      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:-}
+      VPN_TYPE: ${VPN_TYPE:-wireguard}
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-}
+      SERVER_COUNTRIES: ${VPN_SERVER_COUNTRIES:-}
+      SERVER_CITIES: ${VPN_SERVER_CITIES:-}
+
+      # --- http proxy -------------------------------------------------------
+      HTTPPROXY: "on"
+      HTTPPROXY_LISTENING_ADDRESS: ":${VPN_PROXY_PORT:-8888}"
+      # Do not add proxy headers to outgoing requests. Some extractors behave
+      # differently when they can see a proxy in the chain.
+      HTTPPROXY_STEALTH: "on"
+      HTTPPROXY_LOG: ${VPN_PROXY_LOG:-off}
+
+      # Required, not optional: gluetun firewalls everything that is not the
+      # tunnel, which includes its own replies back to the app on the Docker
+      # bridge. Without this the proxy accepts connections and then hangs.
+      # Must match the vpn_link subnet below.
+      FIREWALL_OUTBOUND_SUBNETS: ${VPN_LINK_SUBNET:-172.31.250.0/24}
+    labels:
+      # Pinned deliberately; Watchtower must not swap the tunnel out underneath.
+      com.centurylinklabs.watchtower.enable: "false"
+
+networks:
+  # Dedicated bridge for the app <-> proxy hop only. The subnet is pinned
+  # because gluetun's FIREWALL_OUTBOUND_SUBNETS has to name it explicitly, and
+  # Docker would otherwise pick one at random from its default pool.
+  vpn_link:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${VPN_LINK_SUBNET:-172.31.250.0/24}

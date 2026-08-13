@@ -1,0 +1,10 @@
+# Holds the Pushover app token / user key.
+.env
+
+# Runtime data, if the stack is deployed in-place from a checkout.
+appdata/
+audio/
+video/
+subscriptions/
+users/
+db/
