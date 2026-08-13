@@ -15,6 +15,9 @@ const db_api = require('./db');
 const files_api = require('./files');
 const notifications_api = require('./notifications');
 const archive_api = require('./archive');
+const site_detection_api = require('./site-detection');
+const capture_api = require('./capture');
+const CONSTS = require('./consts');
 
 const mutex = new Mutex();
 let should_check_downloads = true;
@@ -273,14 +276,41 @@ exports.collectInfo = async (download_uid) => {
 
     // setup info required to calculate download progress
 
-    const expected_file_size = utils.getExpectedFileSize(info);
+    let expected_file_size = utils.getExpectedFileSize(info);
+
+    // getExpectedFileSize sums filesize/filesize_approx from the chosen formats.
+    // An HLS/DASH manifest declares neither, so it returns 0 - and
+    // checkDownloadPercent bails on a falsy total, which is why a captured stream
+    // showed no progress at all. The browser saw a Content-Length for progressive
+    // files, so use that when yt-dlp cannot tell us.
+    if (!expected_file_size && options.capture_content_length) {
+        expected_file_size = Number(options.capture_content_length) || 0;
+        if (expected_file_size) {
+            logger.verbose(`Using the captured Content-Length (${expected_file_size} bytes) for progress, as the format reported no size.`);
+        }
+    }
+    // Streams have no byte count anywhere, so fall back to the extension's
+    // bitrate x duration estimate. Logged as an estimate because the percentage
+    // derived from it is approximate and usually completes a little early.
+    if (!expected_file_size && options.capture_estimated_size) {
+        expected_file_size = Number(options.capture_estimated_size) || 0;
+        if (expected_file_size) {
+            logger.info(`Progress for this stream is approximate: using an estimated size of `
+                + `${Math.round(expected_file_size / 1048576)} MB derived from the manifest bitrate and duration.`);
+        }
+    }
 
     const files_to_check_for_progress = [];
 
     // store info in download for future use
     for (let info_obj of info) files_to_check_for_progress.push(utils.removeFileExtension(info_obj['_filename']));
 
-    const title = info.length > 1 ? info[0]['playlist_title'] || info[0]['playlist'] : info[0]['title'];
+    // A capture supplies the browser page's title. Prefer it: for a bare CDN or
+    // manifest URL there is no metadata to extract, so yt-dlp derives the title
+    // from the URL and you end up with rows called "master", "subs" or a signed
+    // token - impossible to recognise in the queue or the library.
+    const derived_title = info.length > 1 ? info[0]['playlist_title'] || info[0]['playlist'] : info[0]['title'];
+    const title = options.capture_title || derived_title;
     await db_api.updateRecord('download_queue', {uid: download_uid}, {args: args,
                                                                     finished_step: true,
                                                                     running: false,
@@ -333,8 +363,21 @@ exports.downloadQueuedFile = async(download_uid, customDownloadHandler = null) =
         if (!parsed_output) {
             const errored_download = await db_api.getRecord('download_queue', {uid: download_uid});
             if (errored_download && errored_download['paused']) return;
-            logger.error(err.toString());
-            await handleDownloadError(download_uid, err.toString(), 'unknown_error');
+
+            // err.toString() is only "Command failed with exit code 1: <command>".
+            // Everything yt-dlp actually said is on err.stderr, so without this the
+            // real reason never reaches the log, the GUI, or the pattern matching
+            // below - every failure looks like a bare exit code.
+            let error_message = err.toString();
+            if (err.stderr) error_message += `\n\n${err.stderr}`;
+            logger.error(error_message);
+
+            // yt-dlp guards the extension in both _prepare_filename and
+            // process_info, so an unusual extension can surface here at download
+            // time rather than during info collection. Same fallback either way.
+            const handled = await attemptSiteDetectionFallback(download_uid, url, error_message);
+            if (handled) { resolve(false); return; }
+            await handleDownloadError(download_uid, error_message, 'unknown_error');
             resolve(false);
             return;
         } else if (parsed_output) {
@@ -394,7 +437,37 @@ exports.downloadQueuedFile = async(download_uid, customDownloadHandler = null) =
                 }
 
                 // registers file in DB
-                const file_obj = await files_api.registerFileDB(full_file_path, type, download['user_uid'], category, download['sub_id'] ? download['sub_id'] : null, options.cropFileSettings);
+                // Only for a single-file download: applying one title to every
+                // item of a playlist would be wrong. Captures are always single.
+                const capture_title = (parsed_output.length === 1 && options.capture_title) ? options.capture_title : null;
+
+                // Fetch the page's poster image here rather than when the capture
+                // was queued. Two reasons: registerFileDB looks for a thumbnail
+                // sitting next to the video with the same basename, and that
+                // basename is only known now (yt-dlp chooses the extension); and
+                // doing it at queue time raced the download, so a fast one
+                // registered before the poster landed.
+                if (parsed_output.length === 1 && options.capture_thumbnail_url) {
+                    await capture_api.fetchPosterImage(
+                        options.capture_thumbnail_url,
+                        path.dirname(filepath_no_extension),
+                        path.basename(filepath_no_extension)
+                    );
+                }
+
+                const file_obj = await files_api.registerFileDB(full_file_path, type, download['user_uid'], category, download['sub_id'] ? download['sub_id'] : null, options.cropFileSettings, null, capture_title);
+
+                // registerFileDB returns false when the file could not be read.
+                // Record that as a failed download rather than carrying a falsy
+                // file object into the archive and notification calls.
+                if (!file_obj) {
+                    const error_message = `Download finished but the resulting file could not be registered. `
+                                        + `yt-dlp reported '${output_json['_filename']}'. See the logs for details.`;
+                    logger.error(error_message);
+                    await handleDownloadError(download_uid, error_message, 'file_registration_failed');
+                    resolve(false);
+                    return;
+                }
 
                 await archive_api.addToArchive(output_json['extractor'], output_json['id'], type, output_json['title'], download['user_uid'], download['sub_id']);
 
@@ -535,6 +608,15 @@ exports.generateArgs = async (url, type, options, user_uid = null, simulated = f
             downloadConfig = utils.injectArgs(downloadConfig, options.additionalArgs.split(',,'));
         }
 
+        // Routes download traffic through the VPN proxy when enabled in settings.
+        // Skipped if --proxy is already present, so a hand-written override in
+        // the custom args always wins over the toggle.
+        const vpn_proxy_enabled = config_api.getConfigItem('ytdl_vpn_proxy_enabled');
+        const vpn_proxy_url = config_api.getConfigItem('ytdl_vpn_proxy_url');
+        if (vpn_proxy_enabled && vpn_proxy_url && !downloadConfig.some(arg => typeof arg === 'string' && arg.startsWith('--proxy'))) {
+            downloadConfig.push('--proxy', vpn_proxy_url);
+        }
+
         const rate_limit = config_api.getConfigItem('ytdl_download_rate_limit');
         if (rate_limit && downloadConfig.indexOf('-r') === -1 && downloadConfig.indexOf('--limit-rate') === -1) {
             downloadConfig.push('-r', rate_limit);
@@ -552,9 +634,185 @@ exports.generateArgs = async (url, type, options, user_uid = null, simulated = f
     // filter out incompatible args
     downloadConfig = filterArgs(downloadConfig, is_audio);
 
-    if (!simulated) logger.verbose(`${default_downloader} args being used: ${downloadConfig.join(',')}`);
+    // Redacted before logging: these args can carry a Cookie header or password,
+    // and this line is written to appdata/logs and rendered in the GUI's log
+    // viewer. Without this, raising the log level to debug a failing download -
+    // exactly when you would - writes session cookies to disk.
+    if (!simulated) logger.verbose(`${default_downloader} args being used: ${utils.redactArgs(downloadConfig).join(',')}`);
     return downloadConfig;
 }
+
+// ---------------------------------------------------------------------------
+// Site-detection fallback (Piece 1)
+// ---------------------------------------------------------------------------
+// Parks a download awaiting a user decision. `paused` keeps it out of
+// checkDownloads' queue without marking it finished or errored, and step_index
+// is rewound so confirming re-runs info collection from the start.
+async function requestDownloadConfirmation(download_uid, confirmation) {
+    logger.info(`Download ${download_uid} needs user confirmation: ${confirmation.kind}`);
+    await db_api.updateRecord('download_queue', {uid: download_uid}, {
+        pending_confirmation: confirmation,
+        paused: true,
+        running: false,
+        finished_step: true,
+        step_index: 0
+    });
+}
+
+// Called when yt-dlp could not get info for a download. Returns true if the
+// failure has been handled (parked for confirmation, or rewritten to retry a
+// detected candidate), in which case the caller must NOT record an error.
+async function attemptSiteDetectionFallback(download_uid, url, error_text) {
+    if (!download_uid) return false;
+    const download = await db_api.getRecord('download_queue', {uid: download_uid});
+    if (!download) return false;
+
+    // yt-dlp refused to write the file because of its extension. Ask rather than
+    // silently overriding a deliberate safety guard - the extension it reports is
+    // authoritative, so it is read back from the error instead of guessed at.
+    const unsafe_match = error_text.match(CONSTS.UNSAFE_EXTENSION_REGEX);
+    if (unsafe_match && !download['allow_unsafe_ext_confirmed']) {
+        const probe = await site_detection_api.probeCandidate(url).catch(() => null);
+        await requestDownloadConfirmation(download_uid, {
+            kind: 'unsafe_extension',
+            url: url,
+            extension: unsafe_match[1],
+            content_type: probe ? probe.content_type : null,
+            content_length: probe ? probe.content_length : null,
+            server_says_media: !!(probe && probe.content_type &&
+                /^(?:video|audio|application\/(?:x-mpegurl|vnd\.apple\.mpegurl|dash\+xml|octet-stream))/i.test(probe.content_type))
+        });
+        return true;
+    }
+
+    // Only the "no extractor could handle this" case is worth a fallback scan,
+    // and only once per download.
+    if (!/Unsupported URL/i.test(error_text) || download['detection_attempted']) return false;
+
+    logger.info(`Running site-detection fallback for download ${download_uid} (${url})`);
+    let detection;
+    try {
+        detection = await site_detection_api.detectCandidates(url);
+    } catch (e) {
+        logger.error(`Site-detection fallback threw for ${url}: ${e.message}`);
+        return false;
+    }
+
+    await db_api.updateRecord('download_queue', {uid: download_uid}, {
+        detection_attempted: true,
+        detection_notes: detection.notes
+    });
+
+    const usable = detection.candidates.filter(c => c.is_embed || (c.probe && c.probe.ok));
+
+    if (usable.length === 0) {
+        // Structurally beyond Piece 1: no candidates, or none servable without a
+        // real browser session. Surfaced as its own error_type so the GUI can
+        // recommend the capture extension instead of showing a raw yt-dlp error.
+        await handleDownloadError(download_uid,
+            `Automatic detection could not find a usable media URL on this page.` +
+            `${detection.needs_session ? ' The site appears to need a real browser session (live cookies), which the server-side scan cannot provide.' : ''}` +
+            `\n\nTo capture this one manually, open the page in Firefox and use the capture extension, then send the video from there.` +
+            `\n\nPage: ${url}` +
+            `\n\nDetection notes:\n${detection.notes.join('\n')}` +
+            `\n\nOriginal yt-dlp error:\n${error_text}`,
+            'detection_failed_use_extension');
+        return true;
+    }
+
+    if (usable.length === 1) {
+        await applyDetectedCandidate(download_uid, download, usable[0]);
+        return true;
+    }
+
+    // More than one hit: never guess. A page with a trailer plus the feature, or
+    // several videos, would otherwise silently download the wrong thing.
+    await requestDownloadConfirmation(download_uid, {
+        kind: 'candidate_selection',
+        source_page_url: url,
+        candidates: usable.map(c => ({
+            url: c.url,
+            confidence: c.confidence,
+            how: c.how,
+            found_in: c.found_in,
+            content_type: c.content_type || null,
+            content_length: c.probe ? c.probe.content_length : null,
+            path_extension: c.path_extension || null,
+            needs_confirmation_for_extension: !!(c.server_says_media && !c.looks_like_media_path)
+        }))
+    });
+    return true;
+}
+
+// Point the download at a detected media URL and let the pipeline re-run.
+// Rewriting the record rather than recursing keeps the state visible in the GUI
+// and makes an accidental retry loop impossible.
+async function applyDetectedCandidate(download_uid, download, candidate) {
+    logger.info(`Site-detection picked ${candidate.url} for download ${download_uid}`);
+    await db_api.updateRecord('download_queue', {uid: download_uid}, {
+        url: candidate.url,
+        original_url: download['original_url'] || download['url'],
+        detected_via: `${candidate.found_in}/${candidate.how}`,
+        pending_confirmation: null,
+        error: null,
+        error_type: null,
+        finished: false,
+        finished_step: true,
+        running: false,
+        paused: false,
+        step_index: 0
+    });
+    should_check_downloads = true;
+}
+
+// Applies the user's answer to a pending_confirmation and releases the download.
+// kind 'unsafe_extension' -> adds --compat-options allow-unsafe-ext for this
+// download only; 'candidate_selection' -> switches to the chosen URL.
+exports.confirmPendingDownload = async (download_uid, {approve = false, candidate_url = null} = {}) => {
+    const download = await db_api.getRecord('download_queue', {uid: download_uid});
+    if (!download || !download['pending_confirmation']) return {success: false, error: 'No pending confirmation for this download.'};
+    const confirmation = download['pending_confirmation'];
+
+    if (!approve) {
+        await db_api.updateRecord('download_queue', {uid: download_uid}, {pending_confirmation: null});
+        await handleDownloadError(download_uid, 'Download declined by user at the confirmation step.', 'user_declined');
+        return {success: true, declined: true};
+    }
+
+    if (confirmation.kind === 'unsafe_extension') {
+        // additionalArgs is delimited by ',,' - see generateArgs.
+        const options = Object.assign({}, download['options'] || {});
+        const existing = options.additionalArgs ? `${options.additionalArgs},,` : '';
+        if (!/allow-unsafe-ext/.test(options.additionalArgs || '')) {
+            options.additionalArgs = `${existing}--compat-options,,allow-unsafe-ext`;
+        }
+        await db_api.updateRecord('download_queue', {uid: download_uid}, {
+            options: options,
+            allow_unsafe_ext_confirmed: true,
+            pending_confirmation: null,
+            error: null,
+            error_type: null,
+            finished: false,
+            finished_step: true,
+            running: false,
+            paused: false,
+            step_index: 0
+        });
+        should_check_downloads = true;
+        return {success: true};
+    }
+
+    if (confirmation.kind === 'candidate_selection') {
+        const chosen = (confirmation.candidates || []).find(c => c.url === candidate_url);
+        if (!chosen) return {success: false, error: 'That candidate is not one of the offered options.'};
+        await applyDetectedCandidate(download_uid, download, {
+            url: chosen.url, found_in: chosen.found_in, how: chosen.how
+        });
+        return {success: true};
+    }
+
+    return {success: false, error: `Unknown confirmation kind '${confirmation.kind}'.`};
+};
 
 exports.getVideoInfoByURL = async (url, args = [], download_uid = null) => {
     // remove bad args
@@ -575,6 +833,11 @@ exports.getVideoInfoByURL = async (url, args = [], download_uid = null) => {
         if (err.stderr) error_message += `\n\n${err.stderr}`;
         logger.error(error_message);
         if (download_uid) {
+            // Piece 1: try to recover before recording a failure. Returns true if
+            // it parked the download for confirmation or rewrote it to retry a
+            // detected candidate, in which case this is not an error yet.
+            const handled = await attemptSiteDetectionFallback(download_uid, url, error_message);
+            if (handled) return null;
             await handleDownloadError(download_uid, error_message, 'info_retrieve_failed');
         }
         return null;

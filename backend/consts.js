@@ -30,6 +30,14 @@ exports.CONFIG_ITEMS = {
         'key': 'ytdl_custom_args',
         'path': 'YoutubeDLMaterial.Downloader.custom_args'
     },
+    'ytdl_vpn_proxy_enabled': {
+        'key': 'ytdl_vpn_proxy_enabled',
+        'path': 'YoutubeDLMaterial.Downloader.vpn_proxy_enabled'
+    },
+    'ytdl_vpn_proxy_url': {
+        'key': 'ytdl_vpn_proxy_url',
+        'path': 'YoutubeDLMaterial.Downloader.vpn_proxy_url'
+    },
     'ytdl_include_thumbnail': {
         'key': 'ytdl_include_thumbnail',
         'path': 'YoutubeDLMaterial.Downloader.include_thumbnail'
@@ -275,6 +283,25 @@ exports.AVAILABLE_PERMISSIONS = [
 
 exports.DETAILS_BIN_PATH = 'appdata/youtube-dl.json'
 exports.OUTDATED_YOUTUBEDL_VERSION = "2020.00.00";
+
+// Used by site-detection.js when fetching pages for the fallback scan. A real
+// browser UA matters: plenty of sites serve a stripped page to unknown agents,
+// which is exactly the content we are trying to read.
+exports.SITE_DETECTION_USER_AGENT =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0';
+
+// yt-dlp reports a refused extension as:
+//   The extracted extension ('php') is unusual and will be skipped for safety
+// Parsed rather than mirroring yt-dlp's allowlist, which contains computed
+// entries and would drift. Ref: GHSA-79w7-vh3h-8g4j
+exports.UNSAFE_EXTENSION_REGEX = /The extracted extension \((?:'|")?([A-Za-z0-9_.-]+)(?:'|")?\) is unusual/;
+
+// Written by the ytdlp-updater sidecar, read here only. Kept separate from
+// DETAILS_BIN_PATH so the sidecar never has to touch the app's own bookkeeping.
+exports.UPDATER_STATUS_PATH = 'appdata/ytdlp-updater-status.json';
+// Touched by the app, consumed and deleted by the sidecar. The shared appdata
+// volume is the only channel between the two - no ports, no network coupling.
+exports.UPDATER_TRIGGER_PATH = 'appdata/.ytdlp-updater.trigger';
 
 // args that have a value after it (e.g. -o <output> or -f <format>)
 const YTDL_ARGS_WITH_VALUES = [

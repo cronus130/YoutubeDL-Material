@@ -8,12 +8,18 @@ const archive_api = require('./archive');
 const utils = require('./utils')
 const logger = require('./logger');
 
-exports.registerFileDB = async (file_path, type, user_uid = null, category = null, sub_id = null, cropFileSettings = null, file_object = null) => {
+exports.registerFileDB = async (file_path, type, user_uid = null, category = null, sub_id = null, cropFileSettings = null, file_object = null, title_override = null) => {
     if (!file_object) file_object = generateFileObject(file_path, type);
     if (!file_object) {
         logger.error(`Could not find associated JSON file for ${type} file ${file_path}`);
         return false;
     }
+
+    // Captures from the browser extension supply the page title. The info JSON
+    // cannot help here: a bare CDN or manifest URL has no metadata, so yt-dlp
+    // derives the title from the URL and the library ends up full of entries
+    // called "master", "subs" or a signed token.
+    if (title_override) file_object['title'] = title_override;
 
     utils.fixVideoMetadataPerms(file_path, type);
 
@@ -61,8 +67,24 @@ function generateFileObject(file_path, type) {
         logger.error(`Failed to get filename from info JSON! File ${jsonobj['title']} could not be added.`);
         return null;
     }
-    const true_file_path = utils.getTrueFileName(jsonobj['_filename'], type);
-    // console.
+    // getTrueFileName rewrites the extension to mp4/mp3, which holds for the
+    // default output template because that hardcodes the extension. It does not
+    // hold when the template ends in .%(ext)s (custom output, e.g. a capture),
+    // where yt-dlp picks the extension - so trust the name it actually reported
+    // if that file is on disk, and only fall back to the rewrite otherwise.
+    let true_file_path = jsonobj['_filename'];
+    if (!fs.existsSync(true_file_path)) {
+        true_file_path = utils.getTrueFileName(jsonobj['_filename'], type);
+    }
+
+    // Previously a statSync on a path that did not exist threw out of an async
+    // chain and took the whole process down. A missing file is a failed download,
+    // not a reason to stop serving.
+    if (!fs.existsSync(true_file_path)) {
+        logger.error(`Expected downloaded file at '${true_file_path}' but it does not exist. `
+                   + `yt-dlp reported '${jsonobj['_filename']}'.`);
+        return null;
+    }
     const stats = fs.statSync(true_file_path);
 
     const file_id = utils.removeFileExtension(path.basename(file_path));

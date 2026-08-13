@@ -399,6 +399,36 @@ exports.restartServer = async (is_update = false) => {
 //  - if already exists and doesn't have value, ignore
 //  - if it doesn't exist and has value, add both arg and value
 //  - if it doesn't exist and doesn't have value, add arg
+// Masks credential-bearing values so an arg list can be logged safely. Log
+// output lands in appdata/logs and is rendered in the GUI's log viewer, so a
+// Cookie header or password in there is a real leak.
+const SENSITIVE_ARGS = ['--add-header', '--password', '--videopassword', '--ap-password',
+                        '--username', '--ap-username', '--client-certificate-password', '--cookies'];
+const SENSITIVE_HEADER_PREFIXES = ['cookie:', 'authorization:', 'x-api-key:', 'proxy-authorization:'];
+
+exports.redactArgs = (args) => {
+    const redacted = [];
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        redacted.push(arg);
+        if (typeof arg !== 'string' || !SENSITIVE_ARGS.includes(arg)) continue;
+
+        const value = args[i + 1];
+        if (typeof value !== 'string') continue;
+        i++;
+        if (arg === '--add-header') {
+            // Only headers that actually carry credentials are masked; the rest
+            // are genuinely useful when debugging (Referer especially).
+            const lower = value.toLowerCase();
+            const sensitive = SENSITIVE_HEADER_PREFIXES.some(prefix => lower.startsWith(prefix));
+            redacted.push(sensitive ? `${value.split(':')[0]}:[REDACTED]` : value);
+        } else {
+            redacted.push('[REDACTED]');
+        }
+    }
+    return redacted;
+};
+
 exports.injectArgs = (original_args, new_args) => {
     const updated_args = original_args.slice();
     try {

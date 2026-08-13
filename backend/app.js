@@ -23,6 +23,7 @@ const session = require('express-session');
 const logger = require('./logger');
 const config_api = require('./config.js');
 const downloader_api = require('./downloader');
+const capture_api = require('./capture');
 const tasks_api = require('./tasks');
 const subscriptions_api = require('./subscriptions');
 const categories_api = require('./categories');
@@ -677,6 +678,70 @@ app.post('/api/setConfig', optionalJwt, function(req, res) {
 
 app.get('/api/versionInfo', (req, res) => {
     res.send({version_info: version_info});
+});
+
+// Current downloader version plus whatever the ytdlp-updater sidecar has
+// reported. Everything is optional: with no sidecar deployed this still returns
+// the version the app itself recorded, and sidecar_detected is false.
+app.get('/api/ytdlpStatus', optionalJwt, (req, res) => {
+    const fork = config_api.getConfigItem('ytdl_default_downloader');
+    const status = {
+        downloader: fork,
+        version: null,
+        sidecar_detected: false,
+        channel: null,
+        flavor: null,
+        last_check: null,
+        last_update: null,
+        last_result: null,
+        held_version: null
+    };
+
+    try {
+        if (fs.existsSync(CONSTS.DETAILS_BIN_PATH)) {
+            const details = fs.readJSONSync(CONSTS.DETAILS_BIN_PATH);
+            if (details && details[fork] && details[fork]['version']) status.version = details[fork]['version'];
+        }
+    } catch (e) {
+        logger.warn(`Could not read ${CONSTS.DETAILS_BIN_PATH}: ${e}`);
+    }
+
+    try {
+        if (fs.existsSync(CONSTS.UPDATER_STATUS_PATH)) {
+            const sidecar = fs.readJSONSync(CONSTS.UPDATER_STATUS_PATH);
+            if (sidecar) {
+                status.sidecar_detected = true;
+                // The sidecar knows the version actually on disk, which can differ
+                // from the app's record when running the nightly channel.
+                if (sidecar['installed_version']) status.version = sidecar['installed_version'];
+                status.channel = sidecar['channel'] || null;
+                status.flavor = sidecar['flavor'] || null;
+                status.last_check = sidecar['last_check'] || null;
+                status.last_update = sidecar['last_update'] || null;
+                status.last_result = sidecar['last_result'] || null;
+                status.held_version = sidecar['held_version'] || null;
+            }
+        }
+    } catch (e) {
+        logger.warn(`Could not read ${CONSTS.UPDATER_STATUS_PATH}: ${e}`);
+    }
+
+    res.send(status);
+});
+
+// Asks the sidecar to run an update check now. Deliberately does NOT call the
+// app's own checkForYoutubeDLUpdate(): that downloads without verifying a
+// checksum and would replace whatever the sidecar installed.
+app.post('/api/ytdlpCheckNow', optionalJwt, (req, res) => {
+    const sidecar_detected = fs.existsSync(CONSTS.UPDATER_STATUS_PATH);
+    try {
+        fs.writeFileSync(CONSTS.UPDATER_TRIGGER_PATH, new Date().toISOString());
+        logger.info('Requested an immediate yt-dlp update check from the updater sidecar.');
+        res.send({success: true, sidecar_detected: sidecar_detected});
+    } catch (e) {
+        logger.error(`Could not write ${CONSTS.UPDATER_TRIGGER_PATH}: ${e}`);
+        res.send({success: false, sidecar_detected: sidecar_detected, error: 'Could not write the trigger file.'});
+    }
 });
 
 app.post('/api/restartServer', optionalJwt, (req, res) => {
@@ -1630,7 +1695,19 @@ app.post('/api/downloads', optionalJwt, async (req, res) => {
     const uids = req.body.uids;
     let downloads = await db_api.getRecords('download_queue', {user_uid: user_uid});
 
-    if (uids) downloads = downloads.filter(download => uids.includes(download['uid']));
+    // The home page passes the uids it started itself, so a download created
+    // anywhere else - the capture extension, the API, the Telegram bot - never
+    // appeared there while it ran. Active downloads are now included regardless of
+    // who started them, which is what someone watching that page wants to see.
+    //
+    // Subscription downloads stay excluded: a subscription check can enqueue
+    // dozens at once and burying the page in them is not an improvement. They are
+    // still listed in full on the Downloads page, which passes no uid filter.
+    if (uids) {
+        downloads = downloads.filter(download =>
+            uids.includes(download['uid']) ||
+            (!download['finished'] && !download['error'] && !download['sub_id']));
+    }
 
     res.send({downloads: downloads});
 });
@@ -1645,6 +1722,104 @@ app.post('/api/download', optionalJwt, async (req, res) => {
     } else {
         res.send({download: null});
     }
+});
+
+// Receives a media URL captured by the Firefox extension, together with the
+// headers that made it work. Authenticated by the same ?apiKey= middleware as
+// every other endpoint, so there is no separate shared secret to manage - enable
+// "Use API key" in Settings > Advanced and give the extension that key.
+//
+// Downloads start immediately rather than waiting for confirmation: captured URLs
+// are frequently signed with a short expiry, and a prompt left unanswered would
+// hand the downloader a dead link. The download is visible and cancellable in the
+// queue either way.
+app.post('/api/capture', optionalJwt, async (req, res) => {
+    const url = req.body.url;
+    if (!url || !/^https?:\/\//i.test(url)) {
+        res.status(400).send({success: false, error: 'A http(s) url is required.'});
+        return;
+    }
+
+    const type = req.body.type === 'audio' ? 'audio' : 'video';
+    const user_uid = req.isAuthenticated() ? req.user.uid : null;
+
+    let capture_args;
+    try {
+        capture_args = await capture_api.buildCaptureArgs({
+            url: url,
+            referer: req.body.referer,
+            cookie: req.body.cookie,
+            user_agent: req.body.user_agent,
+            source_page_url: req.body.source_page_url,
+            // What the browser actually saw the server return. Used to decide
+            // whether an unusual file extension needs confirming.
+            content_type: req.body.content_type
+        });
+    } catch (e) {
+        logger.error(`Capture rejected: ${e.message}`);
+        res.status(400).send({success: false, error: e.message});
+        return;
+    }
+
+    capture_api.pruneCookieJars().catch(() => {});
+
+    // Without this the filename comes from the URL, which for these signed CDN
+    // links is a 400-700 character token - past the 255-byte filesystem limit, so
+    // the download fails with ENAMETOOLONG rather than anything informative.
+    const output_name = capture_api.buildOutputName({
+        page_title: req.body.page_title,
+        url: url,
+        source_page_url: req.body.source_page_url
+    });
+
+    const options = {
+        additionalArgs: capture_args.additionalArgs,
+        customOutput: output_name,
+        // Used for the queue row and the library entry. Without it both show the
+        // URL-derived title, which for these links is "master", "subs" or a token.
+        capture_title: req.body.page_title || output_name,
+        // Fetched at registration time, not here: the poster has to be named after
+        // the file yt-dlp actually wrote, and doing it now would race the download.
+        capture_thumbnail_url: req.body.thumbnail_url || null,
+        // A manifest reports no size, so this is the only way a captured stream can
+        // show progress. content_length is exact and only exists for progressive
+        // files; estimated_size is the extension's bitrate x duration figure for a
+        // stream, so the resulting percentage is approximate.
+        capture_content_length: req.body.content_length || null,
+        capture_estimated_size: req.body.estimated_size || null
+    };
+
+    const download = await downloader_api.createDownload(url, type, options, user_uid);
+    if (!download) {
+        res.status(500).send({success: false, error: 'Could not queue the download.'});
+        return;
+    }
+
+
+    logger.info(`Queued capture from ${req.body.source_page_url || 'unknown page'} -> ${url}`);
+    res.send({
+        success: true,
+        download_uid: download['uid'],
+        used_cookies: !!capture_args.jar_path,
+        preauthorised_extension: capture_args.preauthorised_extension,
+        output_name: output_name
+    });
+});
+
+// Answers a download parked by the site-detection fallback: either approving an
+// unusual file extension yt-dlp refused to write, or picking which detected
+// candidate to use. See downloader.confirmPendingDownload.
+app.post('/api/confirmPendingDownload', optionalJwt, async (req, res) => {
+    const download_uid = req.body.download_uid;
+    const approve = !!req.body.approve;
+    const candidate_url = req.body.candidate_url || null;
+
+    if (!download_uid) {
+        res.status(400).send({success: false, error: 'download_uid is required.'});
+        return;
+    }
+    const result = await downloader_api.confirmPendingDownload(download_uid, {approve, candidate_url});
+    res.send(result);
 });
 
 app.post('/api/clearDownloads', optionalJwt, async (req, res) => {

@@ -208,7 +208,9 @@ const DEFAULT_CONFIG = {
         "include_thumbnail": true,
         "include_metadata": true,
         "max_concurrent_downloads": 5,
-        "download_rate_limit": ""
+        "download_rate_limit": "",
+        "vpn_proxy_enabled": false,
+        "vpn_proxy_url": ""
       },
       "Extra": {
         "title_top": "YoutubeDL-Material",
