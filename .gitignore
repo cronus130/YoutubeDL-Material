@@ -76,3 +76,14 @@ audio/
 video/
 subscriptions/
 users/
+# Firefox extension build artifact (built by firefox-extension/package.sh)
+ytdlm-capture-*.zip
+# Signed builds downloaded back from AMO are named after the submission hash
+# rather than the package, so match the extension itself.
+*.xpi
+
+# Personal planning/handoff notes - local only. These describe the private
+# network and hardware they get deployed onto, so they must never be committed.
+HANDOFF.md
+SITE-DETECTION-HANDOFF.md
+*-HANDOFF.md
