@@ -660,6 +660,16 @@ describe('youtube-dl', async function() {
         this.timeout(300000);
         const original_fork = config_api.getConfigItem('ytdl_default_downloader');
         const latest_version = await youtubedl_api.getLatestUpdateVersion(original_fork);
+        // getLatestUpdateVersion queries the GitHub tags API unauthenticated and
+        // resolves null on any failure, a rate-limit response included - and Actions
+        // runners share datacenter IPs whose 60/hour unauthenticated quota is
+        // routinely spent by other jobs. Asserting on null reports someone else's
+        // exhausted quota as a failure of this repo, so only assert when the lookup
+        // actually answered. The comparison itself is what this test is for.
+        if (latest_version === null) {
+            this.skip();
+            return;
+        }
         assert(latest_version > CONSTS.OUTDATED_YOUTUBEDL_VERSION);
     });
 
