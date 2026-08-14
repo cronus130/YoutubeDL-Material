@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YTDL-Material Capture",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "Captures media URLs and the request headers that made them work, then sends them to a YoutubeDL-Material instance.",
   "browser_specific_settings": {
     "gecko": {
@@ -13,6 +13,10 @@
         ]
       }
     }
+  },
+  "content_security_policy": {
+    "//": "The Manifest V3 default is \"script-src 'self'; upgrade-insecure-requests;\" - that last directive rewrites every http:// request from an extension page to https://, at the CSP layer, before the network stack is involved. Material is typically a self-hosted service on a LAN address with no certificate, so the upgrade meets a plain-HTTP port, the TLS handshake fails with SSL_ERROR_RX_RECORD_TOO_LONG, and fetch reports a bare NetworkError with nothing reaching the server and no webRequest error event to inspect. It is invisible on localhost, which upgrade-insecure-requests skips as potentially trustworthy - so it only appears once Material is somewhere other than the same machine. This policy is the default minus that directive; nothing here is relaxed beyond it.",
+    "extension_pages": "script-src 'self'; object-src 'self'"
   },
   "permissions": [
     "webRequest",

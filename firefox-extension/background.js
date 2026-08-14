@@ -566,9 +566,22 @@ async function testConnection(base, apiKey) {
                        `dom.security.https_first_pbm to false, or the equivalent _for_local_addresses pref.`
             });
         }
+        // No webRequest error event means the request never reached the network
+        // stack, so nothing arrives at the server and there is nothing to inspect.
+        // A CSP upgrade does exactly that, which is why it is named first here.
+        if (!nsResult()) {
+            return finish({
+                success: false,
+                error: `Nothing was sent to ${base} - the request did not reach the network, so the server never saw it ` +
+                       `(${e.message}). If this build's manifest still carries the Manifest V3 default CSP, ` +
+                       `upgrade-insecure-requests rewrote it to https:// and the handshake failed against a plain-HTTP ` +
+                       `port. Otherwise check the IP and port - the port must match the one the container publishes, ` +
+                       `not Material's internal 17442.`
+            });
+        }
         return finish({
             success: false,
-            error: `Could not reach ${base} (${nsResult() || e.message}). Check the IP and port - the port must match the one ` +
+            error: `Could not reach ${base} (${nsResult()}). Check the IP and port - the port must match the one ` +
                    `the container publishes, not Material's internal 17442.`
         });
     }

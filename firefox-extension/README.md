@@ -127,6 +127,28 @@ When the signed `.xpi` arrives from AMO, install that in release Firefox and the
 3. Press **Save & test**. It verifies the URL and key rather than only storing them,
    and prompts for host access if it is missing.
 
+### Why this extension overrides its CSP
+
+The Manifest V3 default content security policy is
+`script-src 'self'; upgrade-insecure-requests;`, and that last directive rewrites
+every `http://` request an extension page makes to `https://` — at the CSP layer,
+before the network stack sees it. Material is normally a self-hosted service on a LAN
+address with no certificate, so the upgraded request meets a plain-HTTP port, the TLS
+handshake fails with `SSL_ERROR_RX_RECORD_TOO_LONG`, and `fetch` surfaces a bare
+`NetworkError`.
+
+`manifest.json` therefore declares the default policy minus that directive. Nothing
+else is relaxed.
+
+Worth knowing because of how thoroughly it misleads: nothing arrives at the server,
+so its logs are silent; `webRequest` never fires an error event, because there was no
+network request to fail; and a normal browser tab loads the same URL over plain HTTP
+without complaint, since page loads carry no extension CSP. It also cannot be
+reproduced against `localhost` — `upgrade-insecure-requests` skips potentially
+trustworthy origins — so it only appears once Material is somewhere other than the
+machine running Firefox. The symptoms impersonate a wrong port, a wrong API key,
+HTTPS-First, and missing host permissions in turn.
+
 ### Host access is not automatic
 
 Firefox MV3 treats manifest `host_permissions` as *requested*, not granted, so a
