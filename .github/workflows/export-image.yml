@@ -1,0 +1,82 @@
+# Exports the published image as a `docker save` tarball, for importing into
+# Synology Container Manager (Image -> Add -> Add From File) on a NAS that you
+# would rather not have pulling from a registry directly.
+#
+# Manual only. No schedule: trigger - GitHub marks a scheduled workflow in a fork
+# as disabled_fork, and a disabled workflow runs on no trigger at all, which would
+# take workflow_dispatch down with it.
+#
+# The archive is left uncompressed on purpose. Actions zips artifacts on upload,
+# so you unzip once and get the plain .tar that Container Manager expects, rather
+# than a .tar.gz you would have to gunzip first.
+name: export-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to export'
+        required: true
+        default: 'nightly'
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Pull the published image
+        id: pull
+        run: |
+          set -euo pipefail
+          REF="ghcr.io/${{ github.repository_owner }}/youtubedl-material:${{ inputs.tag }}"
+          echo "Pulling $REF"
+          # linux/amd64 explicitly: the runner is amd64 anyway, but being explicit
+          # means this still exports the right image if arm64 is added later.
+          docker pull --platform linux/amd64 "$REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker image inspect "$REF" --format '{{index .RepoDigests 0}}')" >> "$GITHUB_OUTPUT"
+          echo "revision=$(docker image inspect "$REF" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" >> "$GITHUB_OUTPUT"
+
+      - name: Save to a tarball
+        id: save
+        run: |
+          set -euo pipefail
+          OUT="youtubedl-material-${{ inputs.tag }}.tar"
+          # Save by name:tag rather than by image id so RepoTags survives into the
+          # archive - without it Container Manager imports the image as <none>:<none>.
+          docker save "${{ steps.pull.outputs.ref }}" -o "$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "$OUT" | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$OUT" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtubedl-material-${{ inputs.tag }}-image
+          path: ${{ steps.save.outputs.out }}
+          retention-days: 14
+          compression-level: 6
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image export ready"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${{ steps.pull.outputs.ref }}\` |"
+            echo "| Digest | \`${{ steps.pull.outputs.digest }}\` |"
+            echo "| Built from commit | \`${{ steps.pull.outputs.revision }}\` |"
+            echo "| Archive | \`${{ steps.save.outputs.out }}\` (${{ steps.save.outputs.size }}) |"
+            echo "| SHA-256 | \`${{ steps.save.outputs.sha256 }}\` |"
+            echo
+            echo "Download the artifact below, unzip it, and import the \`.tar\` via"
+            echo "Container Manager -> Image -> Add -> Add From File."
+            echo
+            echo "Verify the download before importing:"
+            echo '```bash'
+            echo "shasum -a 256 ${{ steps.save.outputs.out }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
