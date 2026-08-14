@@ -122,7 +122,26 @@ When the signed `.xpi` arrives from AMO, install that in release Firefox and the
 
 1. In Material: **Settings → Advanced**, enable **Use API key** and copy the key.
 2. In Firefox: `about:addons` → the extension → **Preferences**. Set the Material
-   base URL (e.g. `http://192.168.1.10:8998`) and paste the API key.
+   base URL (e.g. `http://192.168.1.10:9998` — the port your container publishes,
+   not Material's internal 17442) and paste the API key.
+3. Press **Save & test**. It verifies the URL and key rather than only storing them,
+   and prompts for host access if it is missing.
+
+### Host access is not automatic
+
+Firefox MV3 treats manifest `host_permissions` as *requested*, not granted, so a
+fresh install has no access to whatever host you configure — and granting access on
+a video site does not extend to your Material host. **Save & test** asks for it, but
+if the prompt does not appear, enable it manually at `about:addons` → the extension
+→ **Permissions** → **"Access your data for all websites"**.
+
+Worth knowing what this looks like when it is missing, because it impersonates
+every other problem. Without the grant the extension's `fetch` is not privileged,
+so it counts as an ordinary request from `moz-extension://` — a secure context —
+which makes an `http://` call mixed content, and Firefox upgrades that to HTTPS.
+Against a plain-HTTP server the handshake fails with
+`SSL_ERROR_RX_RECORD_TOO_LONG`, surfacing as a bare `NetworkError`. It reads as a
+wrong URL, a wrong key, or an HTTPS-First pref, and is none of them.
 
 ## Using it
 

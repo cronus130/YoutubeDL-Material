@@ -11,7 +11,45 @@ function setStatus(text, kind = '') {
     const stored = await browser.storage.local.get(['materialUrl', 'apiKey']);
     if (stored.materialUrl) urlInput.value = stored.materialUrl;
     if (stored.apiKey) keyInput.value = stored.apiKey;
+
+    // Surface a missing grant on open rather than waiting for a send to fail.
+    if (stored.materialUrl && !await hasHostAccess(stored.materialUrl)) {
+        setStatus(`No permission to reach ${new URL(stored.materialUrl).hostname} yet - press "Save & test" to grant it.`, 'error');
+    }
 })();
+
+// Host access
+// ---------------------------------------------------------------------------
+// Firefox MV3 treats manifest host_permissions as requested, not granted, so a
+// fresh install has no access to whatever host gets configured here. Without the
+// grant the extension's fetch is not privileged: it is treated as an ordinary
+// request from moz-extension://, which is a secure context, making a http:// call
+// mixed content - and Firefox upgrades that to HTTPS. Against a plain-HTTP server
+// the handshake then fails with SSL_ERROR_RX_RECORD_TOO_LONG, which looks nothing
+// like a permission problem and sends you hunting through HTTPS-First prefs.
+//
+// Match patterns cannot carry a port, so the pattern covers the host on any port.
+function originPattern(base) {
+    const url = new URL(base);
+    return `${url.protocol}//${url.hostname}/*`;
+}
+
+async function hasHostAccess(base) {
+    try {
+        return await browser.permissions.contains({origins: [originPattern(base)]});
+    } catch (e) {
+        return false;
+    }
+}
+
+// Must be called from a click handler - Firefox requires a user gesture.
+async function requestHostAccess(base) {
+    try {
+        return await browser.permissions.request({origins: [originPattern(base)]});
+    } catch (e) {
+        return false;
+    }
+}
 
 // Returns the cleaned values, or null after reporting why they are unusable.
 function readInputs() {
@@ -37,6 +75,22 @@ function readInputs() {
 // The background page runs the probe: webRequest lives there, and it is what
 // turns fetch's single opaque NetworkError into an attributable cause.
 async function runTest(materialUrl, apiKey, prefix = '') {
+    // Checked before anything is sent, because a missing grant fails in a way that
+    // impersonates every other problem - and it cannot be requested later from
+    // background code, which has no user gesture to attach the prompt to.
+    if (!await hasHostAccess(materialUrl)) {
+        setStatus(`${prefix}Requesting access to ${new URL(materialUrl).hostname}...`);
+        if (!await requestHostAccess(materialUrl)) {
+            setStatus(
+                `${prefix}This extension has no permission to reach ${new URL(materialUrl).hostname}, and the request ` +
+                `was dismissed or unavailable here. Grant it in about:addons -> YTDL-Material Capture -> Permissions ` +
+                `-> "Access your data for all websites", then test again. Without it Firefox rewrites the request to ` +
+                `HTTPS and the connection fails in a way that looks like a wrong URL or key.`,
+                'error');
+            return false;
+        }
+    }
+
     setStatus(`${prefix}Testing connection...`);
     const result = await browser.runtime.sendMessage({
         action: 'testConnection',
