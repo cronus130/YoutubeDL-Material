@@ -495,13 +495,121 @@ async function sendToMaterial(capture, metadata) {
         // than returning 401, so a wrong key looks identical to a dead host.
         return {
             success: false,
-            error: `No response from Material (${e.message}). Either the URL is wrong/unreachable, ` +
-                   `or the API key is wrong - a bad key closes the connection instead of returning an error.`
+            error: `No response from Material (${e.message}). Three things look identical here: the URL is ` +
+                   `unreachable, the API key is wrong (a bad key closes the connection instead of returning an ` +
+                   `error), or Firefox rewrote the request to HTTPS against a plain-HTTP server. Use "Test only" ` +
+                   `in the extension options - it distinguishes them.`
         };
     }
 }
 
+// Connection test
+// ---------------------------------------------------------------------------
+// fetch() collapses every transport failure into "NetworkError when attempting
+// to fetch resource", which hides the three causes that actually happen here:
+// the host is unreachable, the API key was rejected (Material closes the socket
+// instead of returning 401), or Firefox rewrote the request to HTTPS against a
+// plain-HTTP server. webRequest sees what fetch will not - the real nsresult and
+// the URL as it actually went out - so the test watches its own request.
+async function testConnection(base, apiKey) {
+    const observed = [];
+    const record = details => observed.push(details);
+
+    // Match patterns cannot carry a port, and a pattern containing one is rejected
+    // outright - so filter on the host and let it cover every port. The scheme is
+    // wildcarded deliberately: catching the https rewrite is the entire point, so
+    // restricting this to the scheme we asked for would filter out the evidence.
+    let filter = null;
+    try {
+        filter = {urls: [`*://${new URL(base).hostname}/*`]};
+    } catch (e) {
+        filter = null;
+    }
+
+    let watching = false;
+    if (filter) {
+        try {
+            browser.webRequest.onErrorOccurred.addListener(record, filter);
+            watching = true;
+        } catch (e) {
+            // Not fatal - we just lose the precise diagnosis and fall back to
+            // fetch's own message.
+        }
+    }
+
+    // A scheme rewrite is the one failure that survives a correct URL and a
+    // correct key, so name it explicitly rather than lumping it in with the rest.
+    const upgraded = () => observed.find(d => /^https:/i.test(d.url)) && /^http:/i.test(base);
+    const nsResult = () => {
+        const hit = observed.find(d => d.error);
+        return hit ? hit.error : null;
+    };
+    const finish = result => {
+        if (watching) browser.webRequest.onErrorOccurred.removeListener(record);
+        return result;
+    };
+
+    // Stage 1: reachability, with no key involved. Anything outside /api/ is
+    // unauthenticated, so a 200 here isolates transport from authentication -
+    // which is what makes a stage 2 failure meaningfully attributable to the key.
+    try {
+        const root = await fetch(`${base}/`, {method: 'GET', cache: 'no-store'});
+        if (!root.ok) {
+            return finish({success: false, error: `Reached ${base} but it returned HTTP ${root.status}. Is that a YTDL-Material instance?`});
+        }
+    } catch (e) {
+        if (upgraded()) {
+            return finish({
+                success: false,
+                error: `Firefox sent this to HTTPS even though the URL is http:// - the server answered in plain HTTP, so the ` +
+                       `handshake failed (${nsResult() || e.message}). In about:config set dom.security.https_first and ` +
+                       `dom.security.https_first_pbm to false, or the equivalent _for_local_addresses pref.`
+            });
+        }
+        return finish({
+            success: false,
+            error: `Could not reach ${base} (${nsResult() || e.message}). Check the IP and port - the port must match the one ` +
+                   `the container publishes, not Material's internal 17442.`
+        });
+    }
+
+    // Stage 2: the key, and whether this build even has the endpoint. An empty
+    // body is deliberate: validation rejects it only after the API middleware has
+    // accepted the key, so a 400 proves authentication passed without creating
+    // anything. A closed socket here - now that stage 1 has proven the host is up
+    // - means the key was refused.
+    observed.length = 0;
+    try {
+        const probe = await fetch(`${base}/api/capture?apiKey=${encodeURIComponent(apiKey)}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: '{}'
+        });
+        if (probe.status === 404) {
+            return finish({success: false, error: `Reached Material, but it has no /api/capture endpoint - that instance is not running a build of this fork.`});
+        }
+        // 400 is the expected, healthy answer to an empty body.
+        if (probe.status === 400) {
+            return finish({success: true, message: 'Connected. URL and API key both accepted.'});
+        }
+        if (probe.ok) {
+            return finish({success: true, message: 'Connected, though the probe was accepted rather than rejected - unexpected but harmless.'});
+        }
+        return finish({success: false, error: `Material returned HTTP ${probe.status} to the test request.`});
+    } catch (e) {
+        return finish({
+            success: false,
+            error: `${base} is reachable, but the API request was refused (${nsResult() || e.message}). That is what a rejected ` +
+                   `API key looks like - Material closes the connection instead of returning 401. Check the key, and that ` +
+                   `"Use API key" is enabled in Material's settings.`
+        });
+    }
+}
+
 browser.runtime.onMessage.addListener(async (message, sender) => {
+    if (message.action === 'testConnection') {
+        return await testConnection(message.base, message.apiKey);
+    }
     if (message.action === 'pageMetadata') {
         // Only the top-level frame's metadata is trusted for the title; an iframed
         // player would otherwise overwrite it with the embed's own page data.

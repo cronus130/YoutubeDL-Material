@@ -10,14 +10,22 @@
     .hint { color: var(--muted); font-size: 11px; margin-top: 3px; }
     button.save { background: var(--accent); color: #fff; border: none; border-radius: 4px;
                   padding: 6px 14px; cursor: pointer; margin-top: 14px; font-size: 13px; }
+    button.test { background: transparent; color: var(--accent); border: 1px solid var(--accent);
+                  border-radius: 4px; padding: 6px 14px; cursor: pointer; margin: 14px 0 0 8px;
+                  font-size: 13px; }
+    /* Diagnoses run several sentences - let them wrap rather than clip. */
+    #status { white-space: pre-wrap; line-height: 1.45; }
   </style>
 </head>
 <body>
   <header><span class="title">YTDL-Material Capture</span></header>
 
   <label for="materialUrl">YTDL-Material URL</label>
-  <input id="materialUrl" type="url" placeholder="http://192.168.1.10:8998">
-  <div class="hint">Base URL only, no trailing path. Must be reachable from this browser.</div>
+  <input id="materialUrl" type="url" placeholder="http://192.168.1.10:9998">
+  <div class="hint">
+    Base URL only, no trailing path. The port is the one your container publishes,
+    not Material's internal 17442.
+  </div>
 
   <label for="apiKey">API key</label>
   <input id="apiKey" type="password" autocomplete="off">
@@ -25,7 +33,8 @@
     From Material: Settings &rarr; Advanced &rarr; enable "Use API key" and copy the generated key.
   </div>
 
-  <button id="save" class="save">Save</button>
+  <button id="save" class="save">Save &amp; test</button>
+  <button id="test" class="test">Test only</button>
   <p id="status" class="status"></p>
 
   <script src="options.js"></script>
